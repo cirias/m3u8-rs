@@ -712,10 +712,16 @@ impl SessionData {
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct MediaPlaylist {
     pub version: Option<usize>,
+    /// `#EXT-X-PART-INF`
+    pub part_inf: Option<PartInf>,
+    /// `#EXT-X-SERVER-CONTROL`
+    pub server_control: Option<ServerControl>,
     /// `#EXT-X-TARGETDURATION:<s>`
     pub target_duration: f32,
     /// `#EXT-X-MEDIA-SEQUENCE:<number>`
     pub media_sequence: u64,
+    /// `#EXT-X-SKIP:<attribute-list>`
+    pub skip: Option<Skip>,
     pub segments: Vec<MediaSegment>,
     /// `#EXT-X-DISCONTINUITY-SEQUENCE:<number>`
     pub discontinuity_sequence: u64,
@@ -729,6 +735,8 @@ pub struct MediaPlaylist {
     pub start: Option<Start>,
     /// `#EXT-X-INDEPENDENT-SEGMENTS`
     pub independent_segments: bool,
+    /// `#EXT-X-PRELOAD-HINT`
+    pub preload_hints: Vec<PreloadHint>,
     /// Unknown tags before the first media segment
     pub unknown_tags: Vec<ExtTag>,
 }
@@ -739,6 +747,12 @@ impl MediaPlaylist {
 
         if let Some(ref v) = self.version {
             writeln!(w, "#EXT-X-VERSION:{}", v)?;
+        }
+        if let Some(ref part_inf) = self.part_inf {
+            part_inf.write_to(w)?;
+        }
+        if let Some(ref server_control) = self.server_control {
+            server_control.write_to(w)?;
         }
         if self.independent_segments {
             writeln!(w, "#EXT-X-INDEPENDENT-SEGMENTS")?;
@@ -761,15 +775,98 @@ impl MediaPlaylist {
         if self.i_frames_only {
             writeln!(w, "#EXT-X-I-FRAMES-ONLY")?;
         }
+        if let Some(ref skip) = self.skip {
+            skip.write_to(w)?;
+        }
         if let Some(ref start) = self.start {
             start.write_to(w)?;
         }
         for segment in &self.segments {
             segment.write_to(w)?;
         }
+        for hint in &self.preload_hints {
+            hint.write_to(w)?;
+        }
         if self.end_list {
             writeln!(w, "#EXT-X-ENDLIST")?;
         }
+
+        Ok(())
+    }
+}
+
+/// [`#EXT-X-PART-INF:<attribute-list>`](https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis#section-4.4.3.7)
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct PartInf {
+    pub part_target: f32,
+}
+
+impl PartInf {
+    pub(crate) fn write_to<T: Write>(&self, w: &mut T) -> std::io::Result<()> {
+        write!(w, "#EXT-X-PART-INF:PART-TARGET={}", self.part_target)?;
+        writeln!(w)?;
+
+        Ok(())
+    }
+}
+
+/// [`#EXT-X-SERVER-CONTROL:<attribute-list>`](https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis#page-22)
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct ServerControl {
+    pub can_block_reload: Option<bool>,
+    pub can_skip_until: Option<f32>,
+    pub can_skip_date_ranges: Option<bool>,
+    pub hold_back: Option<f32>,
+    pub part_hold_back: Option<f32>,
+}
+
+impl ServerControl {
+    pub(crate) fn write_to<T: Write>(&self, w: &mut T) -> std::io::Result<()> {
+        write!(w, "#EXT-X-SERVER-CONTROL:")?;
+        let mut attrs = Vec::new();
+        if let Some(can_block_reload) = self.can_block_reload {
+            if can_block_reload {
+                attrs.push("CAN-BLOCK-RELOAD=YES".to_string());
+            }
+        }
+        if let Some(can_skip_until) = self.can_skip_until {
+            attrs.push(format!("CAN-SKIP-UNTIL={}", can_skip_until));
+        }
+        if let Some(can_skip_date_ranges) = self.can_skip_date_ranges {
+            if can_skip_date_ranges {
+                attrs.push("CAN-SKIP-DATERANGES=YES".to_string());
+            }
+        }
+        if let Some(hold_back) = self.hold_back {
+            attrs.push(format!("HOLD-BACK={}", hold_back));
+        }
+        if let Some(part_hold_back) = self.part_hold_back {
+            attrs.push(format!("PART-HOLD-BACK={}", part_hold_back));
+        }
+        writeln!(w, "{}", attrs.join(","))?;
+
+        Ok(())
+    }
+}
+
+/// [`#EXT-X-SKIP:<attribute-list>`](https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis#section-4.4.5.2)
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct Skip {
+    pub skipped_segments: u64,
+    pub recently_removed_dateranges: Option<Vec<String>>,
+}
+
+impl Skip {
+    pub(crate) fn write_to<T: Write>(&self, w: &mut T) -> std::io::Result<()> {
+        write!(w, "#EXT-X-SKIP:SKIPPED-SEGMENTS={}", self.skipped_segments)?;
+        if let Some(ref dateranges) = self.recently_removed_dateranges {
+            write!(
+                w,
+                ",RECENTLY-REMOVED-DATERANGES=\"{}\"",
+                dateranges.join("\t")
+            )?;
+        }
+        writeln!(w)?;
 
         Ok(())
     }
@@ -823,9 +920,9 @@ impl Default for MediaPlaylistType {
 /// is specified by a URI and optionally a byte range.
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct MediaSegment {
-    pub uri: String,
+    pub uri: Option<String>,
     /// `#EXTINF:<duration>,[<title>]`
-    pub duration: f32,
+    pub duration: Option<f32>,
     /// `#EXTINF:<duration>,[<title>]`
     pub title: Option<String>,
     /// `#EXT-X-BYTERANGE:<n>[@<o>]`
@@ -840,6 +937,8 @@ pub struct MediaSegment {
     pub program_date_time: Option<chrono::DateTime<chrono::FixedOffset>>,
     /// `#EXT-X-DATERANGE:<attribute-list>`
     pub daterange: Option<DateRange>,
+    /// `#EXT-X-PART:<attribute-list>`
+    pub parts: Option<Vec<MediaSegmentPart>>,
     /// `#EXT-`
     pub unknown_tags: Vec<ExtTag>,
 }
@@ -880,19 +979,30 @@ impl MediaSegment {
             v.write_attributes_to(w)?;
             writeln!(w)?;
         }
+        if let Some(ref parts) = &self.parts {
+            for part in parts {
+                part.write_to(w)?;
+            }
+        }
         for unknown_tag in &self.unknown_tags {
             writeln!(w, "{}", unknown_tag)?;
         }
 
-        write!(w, "#EXTINF:{},", self.duration)?;
+        if let Some(duration) = &self.duration {
+            write!(w, "#EXTINF:{},", duration)?;
+        }
 
         if let Some(ref v) = self.title {
             writeln!(w, "{}", v)?;
-        } else {
+        } else if self.duration.is_some() {
             writeln!(w)?;
         }
 
-        writeln!(w, "{}", self.uri)
+        if let Some(uri) = &self.uri {
+            writeln!(w, "{}", uri)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -1129,6 +1239,88 @@ impl DateRange {
             }
         }
         Ok(())
+    }
+}
+
+/// [`#EXT-X-PART:<attribute-list>`](https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis#section-4.4.4.9)
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct MediaSegmentPart {
+    pub uri: String,
+    pub duration: f32,
+    pub independent: Option<bool>,
+    pub byte_range: Option<ByteRange>,
+    pub gap: Option<bool>,
+}
+
+impl MediaSegmentPart {
+    pub(crate) fn write_to<T: Write>(&self, w: &mut T) -> std::io::Result<()> {
+        write!(w, "#EXT-X-PART:URI={},DURATION={}", self.uri, self.duration)?;
+        if let Some(independent) = self.independent {
+            if independent {
+                write!(w, ",INDEPENDENT=YES")?;
+            }
+        }
+        if let Some(ref byte_range) = self.byte_range {
+            write!(w, ",BYTERANGE=")?;
+            byte_range.write_value_to(w)?;
+        }
+        if let Some(gap) = self.gap {
+            if gap {
+                write!(w, ",GAP=YES")?;
+            }
+        }
+        writeln!(w)?;
+
+        Ok(())
+    }
+}
+
+/// [`#EXT-X-PRELOAD-HINT:<attribute-list>`](https://datatracker.ietf.org/doc/html/draft-pantos-hls-rfc8216bis#section-4.4.5.3)
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct PreloadHint {
+    pub r#type: PreloadHintType,
+    pub uri: String,
+    pub byte_range_start: Option<u64>,
+    pub byte_range_length: Option<u64>,
+}
+
+impl PreloadHint {
+    pub(crate) fn write_to<T: Write>(&self, w: &mut T) -> std::io::Result<()> {
+        write!(w, "#EXT-X-PRELOAD-HINT:TYPE={},URI={}", self.r#type, self.uri)?;
+        if let Some(start) = self.byte_range_start {
+            write!(w, ",BYTERANGE-START={}", start)?;
+        }
+        if let Some(len) = self.byte_range_length {
+            write!(w, ",BYTERANGE-LENGTH={}", len)?;
+        }
+        writeln!(w)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
+pub enum PreloadHintType {
+    Part,
+    Map,
+}
+
+impl Default for PreloadHintType {
+    fn default() -> Self {
+        Self::Part
+    }
+}
+
+impl Display for PreloadHintType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Part => "PART",
+                Self::Map => "MAP",
+            }
+        )
     }
 }
 
